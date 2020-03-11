@@ -1,0 +1,11 @@
+This is the 1.46 release of the dump1090 application for Windows to support the SDRplay RSP1, RSP1A, RSP2 and RSPduo.
+
+This code is still in development, please see the documentation that is installed with this software for its use and known issues.
+
+NOTE 1: If you start the software with multiple RSPs available, please select the one you want dump1090 to use in the command prompt window from the menu list that will appear.
+
+NOTE 2: If using the RSP2 for ADS-B - PORT B will be used by default.
+
+NOTE 3: If using the RSPduo for ADS-B - Tuner 2 will be used by default.
+
+A full set of command line options can be seen by running sdrplay_dump1090.exe --help in a command prompt window from the dump1090 installation directory.

@@ -1,3 +1,5 @@
 @echo off
-title sdrplay_dump1090 V1.3 (2MHz mode)
-.\sdrplay_dump1090.exe --dev-sdrplay --quiet --net --normal
+title CTRL-C to EXIT - v1.46 Std Performance dump1090
+.\DisableClose.exe
+.\sdrplay_dump1090.exe --dev-sdrplay --quiet --net
+pause

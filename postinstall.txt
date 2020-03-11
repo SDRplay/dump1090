@@ -1,0 +1,11 @@
+Quick start guide:
+
+Install Virtual Radar (http://www.virtualradarserver.co.uk)
+Run the start2.bat (or start8.bat) script in the installation directory
+Connect via a browser to the virtual radar server (normally http://127.0.0.1/VirtualRadar)
+
+If multiple RSPs are available and no aircraft are being detected, make sure you type the correpsonding number from the menu that will be displayed. This tells dump1090 which RSP to use and press make sure to press return after the number.
+
+Remember port B is used by default if you are using the RSP2 and tuner 2 is used by default if you are using the RSPduo.
+
+Enjoy!

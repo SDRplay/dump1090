@@ -52,7 +52,7 @@
 
 // Default version number, if not overriden by the Makefile
 #ifndef MODES_DUMP1090_VERSION
-# define MODES_DUMP1090_VERSION     "v1.3-SDRplay"
+#define MODES_DUMP1090_VERSION     "v1.46-SDRplay"
 #endif
 
 #ifndef MODES_DUMP1090_VARIANT
@@ -86,6 +86,8 @@
 
 // Avoid a dependency on rtl-sdr except where it's really needed.
 typedef struct rtlsdr_dev rtlsdr_dev_t;
+
+typedef void *HANDLE;
 
 // ============================= #defines ===============================
 
@@ -229,7 +231,7 @@ typedef struct rtlsdr_dev rtlsdr_dev_t;
 #include "cpr.h"
 #include "icao_filter.h"
 #include "convert.h"
-#include "mirsdrapi-rsp.h"
+#include "sdrplay_api.h"
 
 //======================== structure declarations =========================
 
@@ -326,9 +328,14 @@ struct {                             // Internal state
     int   oversampleDecMode;
     int   ifMode;
     int   bwMode;
-    int   rsp1aNotchEn;
+    int   disableBroadcastNotch;
+    int   disableDabNotch;
     int   enable_biasT;
-    mir_sdr_RSPII_AntennaSelectT antenna_port;
+    int   adsbMode;
+    sdrplay_api_Rsp2_AntennaSelectT antenna_port;
+    sdrplay_api_RspDx_AntennaSelectT Dxantenna_port;
+    sdrplay_api_TunerSelectT tuner;
+    sdrplay_api_RspDuoModeT mode;
     char *device_serno;
 #endif
     int   phase_enhance;             // Enable phase enhancement if true
@@ -394,6 +401,14 @@ struct {                             // Internal state
     struct stats stats_5min;
     struct stats stats_15min;
 } Modes;
+
+    sdrplay_api_DeviceT *chosenDev;
+    sdrplay_api_CallbackFnsT cbFns;
+    sdrplay_api_DeviceParamsT *deviceParams;
+    sdrplay_api_RxChannelParamsT *chParams;
+
+    int masterInitialised, slaveUninitialised;
+    int slaveAttached;
 
 // The struct we use to store information about a decoded message.
 struct modesMessage {

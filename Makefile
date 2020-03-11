@@ -24,9 +24,10 @@ endif
 
 CPPFLAGS+=-DMODES_DUMP1090_VERSION=\"$(DUMP1090_VERSION)\"
 CFLAGS+= -O3 -g -Wall -Werror -W -static
+#CFLAGS+= -O0 -g -Wall -Werror -W -static -ggdb
 #CFLAGS+= -g -Wall -Werror -W
 CFLAGS+=$(SDRPLAY_CFLAGS)
-LIBS= -L./ -lmir_sdr_api -lpthread -lm
+LIBS= -L./ -lsdrplay_api -lpthread -lm
 LIBS+=$(SDRPLAY_LIBS)
 LIBS_RTL=`pkg-config --libs librtlsdr`
 CC=gcc

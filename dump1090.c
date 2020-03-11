@@ -53,7 +53,9 @@
 
 #include <stdarg.h>
 
+#define MAX_RSP_DEVS           16
 static int verbose_device_search(char *s);
+sdrplay_api_DeviceT devs[MAX_RSP_DEVS];
 
 //
 // ============================= Utility functions ==========================
@@ -84,10 +86,49 @@ static void log_with_timestamp(const char *format, ...)
 
 static void sigintHandler(int dummy) {
     MODES_NOTUSED(dummy);
+    sdrplay_api_ErrT err;
+    int reint = 0;
+
+    if(slaveAttached == 1) {
+        if (Modes.interactive) {
+            Modes.interactive = 0;
+            reint = 1;
+        }
+        fprintf(stderr, "\nUnable to close this application.\n\nAnother application is currently using the slave tuner.\nPlease close the application that is currently using the slave tuner\nbefore attempting to close this application.\nPress ENTER key to continue\n");
+        getchar();
+        if (reint == 1) {
+            Modes.interactive = 1;
+            reint = 0;
+        }
+        return;
+    }
+
     signal(SIGINT, SIG_DFL);  // reset signal handler - bit extra safety
     Modes.exit = 1;           // Signal to threads that we are done
     pthread_cond_signal(&Modes.exit_cond);      // tell reader thread to exit (only needed for sdrplay)
     log_with_timestamp("Caught SIGINT, shutting down..\n");
+
+    err = sdrplay_api_Uninit(chosenDev->dev);
+    if (err != sdrplay_api_Success) {
+        if (Modes.interactive) {
+            Modes.interactive = 0;
+        }
+        fprintf(stderr, "sdrplay_api_Uninit error: %s\n", sdrplay_api_GetErrorString(err));
+    }
+    err = sdrplay_api_ReleaseDevice(chosenDev);
+    if (err != sdrplay_api_Success) {
+        if (Modes.interactive) {
+            Modes.interactive = 0;
+        }
+        fprintf(stderr, "sdrplay_api_ReleaseDevice error: %s\n", sdrplay_api_GetErrorString(err));
+    }
+    err = sdrplay_api_Close();
+    if (err != sdrplay_api_Success) {
+        if (Modes.interactive) {
+            Modes.interactive = 0;
+        }
+        fprintf(stderr, "sdrplay_api_Close error: %s\n", sdrplay_api_GetErrorString(err));
+    }
 }
 
 static void sigtermHandler(int dummy) {
@@ -105,7 +146,7 @@ static void sigtermHandler(int dummy) {
 int getTermRows() { 
     struct winsize w; 
     ioctl(STDOUT_FILENO, TIOCGWINSZ, &w); 
-    return (w.ws_row); 
+    return w.ws_row; 
 } 
 
 // Handle resizing terminal
@@ -163,10 +204,12 @@ void modesInitConfig(void) {
     Modes.json_location_accuracy  = 1;
     Modes.maxRange                = 1852 * 300; // 300NM default max range
 #ifdef SDRPLAY
-    Modes.antenna_port            = mir_sdr_RSPII_ANTENNA_B;
-    Modes.ifMode                  = 0;
-    Modes.bwMode                  = 1;
-    Modes.rsp1aNotchEn            = 0;
+    Modes.antenna_port            = sdrplay_api_Rsp2_ANTENNA_B;
+    Modes.Dxantenna_port          = sdrplay_api_RspDx_ANTENNA_B;
+    Modes.tuner                   = sdrplay_api_Tuner_B; // RSPduo default
+    Modes.mode                    = sdrplay_api_RspDuoMode_Master; // RSPduo default
+    Modes.bwMode                  = 1; // 5 MHz
+    Modes.adsbMode                = 1; // for ZIF
 #endif
 }
 //
@@ -413,65 +456,179 @@ int modesInitRTLSDR(void) {
 #ifdef SDRPLAY
 
 #define LNA_STATE_FOR_MAX_GAIN 0
-#define MAX_RSP_DEVS           4
 
-void sdrplayCallback(short *xi, short *xq, unsigned int firstSampleNum, int grChanged, int rfChanged, int fsChanged, unsigned int numSamples, unsigned int reset, void *cbContext);
-void sdrplayGainCallback(unsigned int gRdB, unsigned int lnaGRdB, void *cbContext);
+void sdrplayCallbackA(short *xi, short *xq, sdrplay_api_StreamCbParamsT *params, unsigned int numSamples, unsigned int reset, void *cbContext);
+void sdrplayCallbackB(short *xi, short *xq, sdrplay_api_StreamCbParamsT *params, unsigned int numSamples, unsigned int reset, void *cbContext);
+void sdrplayEventCallback(sdrplay_api_EventT eventId, sdrplay_api_TunerSelectT tuner, sdrplay_api_EventParamsT *params, void *cbContext);
 
 int modesInitSDRplay(void) {
 
-    mir_sdr_ErrT err;
+    sdrplay_api_ErrT err;
     float ver;
-    unsigned char hwVer;
     unsigned int ndevs = 0;
-    mir_sdr_DeviceT devs[MAX_RSP_DEVS];
     unsigned int i;
-//    unsigned int devIdx = 0;
+    unsigned int devIdx;
+    int reint = 0;
+    
+    slaveAttached = 0;
+
+    /* Allocate data buffers */
+    Modes.sdrplay_data = malloc(MODES_RSP_BUF_SIZE * MODES_RSP_BUFFERS * sizeof(short));
+
+    if (Modes.sdrplay_data == NULL){
+        if(Modes.interactive) {
+            Modes.interactive = 0;
+        }
+        fprintf(stderr, "Insufficient memory for buffers\n");
+        return 1;
+    }  
+
+    err = sdrplay_api_Open();
+    if(err != sdrplay_api_Success) {
+        if(Modes.interactive) {
+            Modes.interactive = 0;
+        }
+        fprintf(stderr, "dump1090: Open error (%s)\n", sdrplay_api_GetErrorString(err));
+        return 1;
+    }
+#if 0
+    err = sdrplay_api_DebugEnable(NULL, 1);
+    if (err != sdrplay_api_Success) {
+        if(Modes.interactive) {
+            Modes.interactive = 0;
+        }
+        fprintf(stderr, "dump1090: DebugEnable error (%s)\n", sdrplay_api_GetErrorString(err));
+        return 1;
+    }
+#endif
 
     /* Check API version */
-    err = mir_sdr_ApiVersion(&ver);
-    if (err ||  (ver != MIR_SDR_API_VERSION)) {
-            fprintf(stderr, "Incorrect API version %f\n", ver);
-            return (1);
+    sdrplay_api_ApiVersion(&ver);
+    if (ver <  (float)(3.06)) {
+        if(Modes.interactive) {
+            Modes.interactive = 0;
+        }
+        fprintf(stderr, "Incorrect API version %.2f\n", ver);
+        return 1;
     }       
 
-    err = mir_sdr_DebugEnable(0);
+    err = sdrplay_api_LockDeviceApi();
+    if (err != sdrplay_api_Success) {
+        if(Modes.interactive) {
+            Modes.interactive = 0;
+        }
+        fprintf(stderr, "dump1090: LockDeviceApi error (%s)\n", sdrplay_api_GetErrorString(err));
+        return 1;
+    }
 
-    err = mir_sdr_GetDevices(devs, &ndevs, MAX_RSP_DEVS);
-    if ((ndevs > 1) && (Modes.device_serno == NULL))
+    err = sdrplay_api_GetDevices(devs, &ndevs, MAX_RSP_DEVS);
+    if (err != sdrplay_api_Success) {
+        if(Modes.interactive) {
+            Modes.interactive = 0;
+        }
+        fprintf(stderr, "dump1090: GetDevices error (%s)\n", sdrplay_api_GetErrorString(err));
+        sdrplay_api_UnlockDeviceApi();
+        return 1;
+    }
+
+    if (ndevs == 1)
     {
+        // only 1 device found, so use it
+        chosenDev = &devs[0];
+        if (chosenDev->hwVer == SDRPLAY_RSPduo_ID) {
+            if (chosenDev->rspDuoMode & sdrplay_api_RspDuoMode_Master) {
+                chosenDev->tuner = Modes.tuner;
+                chosenDev->rspDuoMode = Modes.mode;
+                chosenDev->rspDuoSampleFreq = 8000000.0;
+            }
+            else
+            {
+                if(chosenDev->rspDuoMode != sdrplay_api_RspDuoMode_Single_Tuner) {
+                    chosenDev->rspDuoMode = sdrplay_api_RspDuoMode_Slave;
+                }
+            }
+        }
+#if 0
+        err = sdrplay_api_DebugEnable(chosenDev->dev, 1);
+        if (err != sdrplay_api_Success) {
+            if(Modes.interactive) {
+                Modes.interactive = 0;
+            }
+            fprintf(stderr, "dump1090: DebugEnable error (%s)\n", sdrplay_api_GetErrorString(err));
+            return 1;
+        }
+#endif
+
+        if (chosenDev->hwVer != SDRPLAY_RSPduo_ID) {
+            chosenDev->tuner = sdrplay_api_Tuner_A;
+        }
+
+        err = sdrplay_api_SelectDevice(chosenDev);
+        if (err != sdrplay_api_Success) {
+            if(Modes.interactive) {
+                Modes.interactive = 0;
+            }
+            fprintf(stderr, "dump1090: SelectDevice-1 error (%s)\n", sdrplay_api_GetErrorString(err));
+            sdrplay_api_UnlockDeviceApi();
+            return 1;
+        }
+    }
+    else if ((ndevs > 1) && (Modes.device_serno == NULL))
+    {
+        if(Modes.interactive) {
+            Modes.interactive = 0;
+            reint = 1;
+        }
         /* List RSP devices if device serial number not specfied */
-/*
-        fprintf(stdout, "Please select a RSP device from the follwoing list:\n");
+
+        fprintf(stdout, "Please select a RSP device from the following list:\n\n");
         for (i = 0; i < ndevs; i++)
         {
-            fprintf(stdout, "Device Index %d: SerialNumber = %s\n", i, devs[i].SerNo);
+            if(devs[i].hwVer == SDRPLAY_RSP1A_ID)
+                fprintf(stdout, "Device Index %d: RSP1A  - SerialNumber = %s\n", i, devs[i].SerNo);
+            else if(devs[i].hwVer == SDRPLAY_RSPduo_ID)
+                fprintf(stdout, "Device Index %d: RSPduo - SerialNumber = %s\n", i, devs[i].SerNo);
+            else
+                fprintf(stdout, "Device Index %d: RSP%d   - SerialNumber = %s\n", i, devs[i].hwVer, devs[i].SerNo);
         }
-        fprintf(stdout, "Enter Device Index number [0:%d] >> ", ndevs - 1);
+        fprintf(stdout, "\nEnter Device Index number [0:%d] >> ", ndevs - 1);
         int xx = fscanf(stdin, "%d", &devIdx);
         i = i + (xx - xx);
         if (devIdx < ndevs)
         {
-            mir_sdr_SetDeviceIdx(devIdx);
+            chosenDev = &devs[devIdx];
         }
         else
         {
             fprintf(stderr, "Device index %d is out of range [0:%d]\n", devIdx, ndevs - 1);
-            return (1);
+            return 1;
         }
-*/
-        for (i = 0; i < ndevs; i++)
-        {
-            if (devs[i].devAvail == 1)
-            {
-                mir_sdr_SetDeviceIdx(i);
-                break;
+
+        if (reint == 1) {
+            Modes.interactive = 1;
+            reint = 0;
+        }
+
+        if (chosenDev->hwVer == SDRPLAY_RSPduo_ID) {
+            if (chosenDev->rspDuoMode & sdrplay_api_RspDuoMode_Master) {
+                chosenDev->tuner = Modes.tuner;
+                chosenDev->rspDuoMode = Modes.mode;
+                chosenDev->rspDuoSampleFreq = 8000000.0;
             }
-            if ((i == ndevs) && (devs[i].devAvail == 0))
-            {
-            fprintf(stderr, "RSPs found but none available.\n");
-                return 1;
+        }
+    
+        if (chosenDev->hwVer != SDRPLAY_RSPduo_ID) {
+            chosenDev->tuner = sdrplay_api_Tuner_A;
+        }
+
+        err = sdrplay_api_SelectDevice(chosenDev);
+        if (err != sdrplay_api_Success) {
+            if(Modes.interactive) {
+                Modes.interactive = 0;
             }
+            fprintf(stderr, "dump1090: SelectDevice-2 error (%s)\n", sdrplay_api_GetErrorString(err));
+            sdrplay_api_UnlockDeviceApi();
+            return 1;
         }
     }
     else if (ndevs > 1)
@@ -481,80 +638,210 @@ int modesInitSDRplay(void) {
         {
             if (!strcasecmp(Modes.device_serno, devs[i].SerNo))
             {
-                mir_sdr_SetDeviceIdx(i);
+                chosenDev = &devs[i];
+                if (chosenDev->hwVer == SDRPLAY_RSPduo_ID) {
+                    if (chosenDev->rspDuoMode & sdrplay_api_RspDuoMode_Master) {
+                        chosenDev->tuner = Modes.tuner;
+                        chosenDev->rspDuoMode = Modes.mode;
+                        chosenDev->rspDuoSampleFreq = 8000000.0;
+                    }
+                }
+    
+                if (chosenDev->hwVer != SDRPLAY_RSPduo_ID) {
+                    chosenDev->tuner = sdrplay_api_Tuner_A;
+                }
+
+                err = sdrplay_api_SelectDevice(chosenDev);
+                if (err != sdrplay_api_Success) {
+                    sdrplay_api_UnlockDeviceApi();
+                    if(Modes.interactive) {
+                        Modes.interactive = 0;
+                    }
+                    fprintf(stderr, "dump1090: SelectDevice-3 error (%s)\n", sdrplay_api_GetErrorString(err));
+                    return 1;
+                }
                 break;
             }
         }
         if (i == ndevs)
         {
+            if(Modes.interactive) {
+                Modes.interactive = 0;
+            }
             fprintf(stderr, "Couldn't find a RSP with serial number %s\n", Modes.device_serno);
-            return (1);
+            return 1;
         }
     }
     else if (ndevs == 0)
     {
+        if(Modes.interactive) {
+            Modes.interactive = 0;
+        }
         fprintf(stderr, "Couldn't find a RSP\n");
-        return (1);
+        sdrplay_api_UnlockDeviceApi();
+        return 1;
     }
 
-    /* Initialize SDRplay device */
-
-    err |= mir_sdr_DCoffsetIQimbalanceControl(1, 0);
-
-    err |= mir_sdr_SetTransferMode(mir_sdr_ISOCH);
-
-    mir_sdr_If_kHzT ifType = (Modes.ifMode) ? mir_sdr_IF_2_048 : mir_sdr_IF_Zero;
-    mir_sdr_Bw_MHzT bwType = (Modes.bwMode) ? mir_sdr_BW_5_000 : mir_sdr_BW_1_536;
-
-    err |= mir_sdr_StreamInit(&Modes.gr, 8.000, 1090.000, bwType,
-          ifType, LNA_STATE_FOR_MAX_GAIN, &Modes.systemGain, mir_sdr_USE_RSP_SET_GR,
-          &Modes.sdrplaySamplesPerPacket, sdrplayCallback, sdrplayGainCallback, NULL);
-    if (err) {
-        fprintf(stderr, "Unable to initialize RSP\n");
-        return (1);
+    err = sdrplay_api_UnlockDeviceApi();
+    if (err != sdrplay_api_Success) {
+        if(Modes.interactive) {
+            Modes.interactive = 0;
+        }
+        fprintf(stderr, "dump1090: UnlockDeviceApi error (%s)\n", sdrplay_api_GetErrorString(err));
+        return 1;
     }
 
-    /* Allocate data buffers */
-    Modes.sdrplay_data = malloc (MODES_RSP_BUF_SIZE * MODES_RSP_BUFFERS * sizeof(short));
-
-    if (Modes.sdrplay_data == NULL){
-            fprintf(stderr, "Insufficient memory for buffers\n");
-            return (1);
-    }  
-
-    err = mir_sdr_RSP_SetGrLimits(mir_sdr_EXTENDED_MIN_GR);
-    err |= mir_sdr_GetHwVersion(&hwVer);
-
-    if (hwVer == 2)
-    {
-        err |= mir_sdr_RSPII_AntennaControl(Modes.antenna_port);
-        err |= mir_sdr_RSPII_BiasTControl(Modes.enable_biasT);
-        err |= mir_sdr_RSPII_RfNotchEnable(1);
+    err = sdrplay_api_GetDeviceParams(chosenDev->dev, &deviceParams);
+    if (err != sdrplay_api_Success) {
+        if(Modes.interactive) {
+            Modes.interactive = 0;
+        }
+        fprintf(stderr, "dump1090: GetDeviceParams error (%s)\n", sdrplay_api_GetErrorString(err));
+        return 1;
     }
 
-    if (hwVer > 253)
-    {
-        err |= mir_sdr_rsp1a_BiasT(Modes.enable_biasT);
-        err |= mir_sdr_rsp1a_BroadcastNotch(Modes.rsp1aNotchEn);
+    if (deviceParams == NULL) {
+        if(Modes.interactive) {
+            Modes.interactive = 0;
+        }
+        fprintf(stderr, "dump1090: deviceParams == NULL\n");
+        return 1;
     }
 
-    /* Configure DC tracking in tuner */
-    err |= mir_sdr_SetDcMode(4,0);
-    err |= mir_sdr_SetDcTrackTime(63);
+    chParams = (chosenDev->tuner == sdrplay_api_Tuner_A)? deviceParams->rxChannelA: deviceParams->rxChannelB;
+
+    chParams->ctrlParams.dcOffset.IQenable = 0;
+    chParams->ctrlParams.dcOffset.DCenable = 1;
+
+//#if defined(__arm__) || defined(__aarch64__)
+//    deviceParams->devParams->mode = 1; // Bulk mode
+//#else
+//    deviceParams->devParams->mode = 0; // Isochronous mode
+//#endif
+
+    sdrplay_api_If_kHzT ifType = (Modes.ifMode == 0) ? sdrplay_api_IF_Zero : sdrplay_api_IF_2_048;
+    sdrplay_api_Bw_MHzT bwType = (Modes.bwMode == 0) ? sdrplay_api_BW_1_536 : sdrplay_api_BW_5_000;
+
+
+    if (chosenDev->hwVer == SDRPLAY_RSPduo_ID) {
+        if (chosenDev->rspDuoMode == sdrplay_api_RspDuoMode_Master || chosenDev->rspDuoMode == sdrplay_api_RspDuoMode_Slave) {
+            Modes.ifMode = 1;
+            if (Modes.oversample) {
+                Modes.adsbMode = 2;
+            }
+            else
+            {
+                Modes.adsbMode = 0;
+            }
+            ifType = sdrplay_api_IF_2_048;
+            bwType = sdrplay_api_BW_5_000;
+        }
+        else
+        {
+            Modes.ifMode = 0;
+            Modes.adsbMode = 1;
+            ifType = sdrplay_api_IF_Zero;
+            bwType = sdrplay_api_BW_5_000;
+        }
+    }
+
+    chParams->tunerParams.ifType = ifType;
+    chParams->tunerParams.bwType = bwType;
+
+    chParams->tunerParams.rfFreq.rfHz = 1090.0 * 1e6;
+
+    if (chosenDev->hwVer != SDRPLAY_RSP1_ID) {
+        chParams->tunerParams.gain.minGr = sdrplay_api_EXTENDED_MIN_GR;
+    }
+    chParams->tunerParams.gain.gRdB = Modes.gr;
+    chParams->tunerParams.gain.LNAstate = LNA_STATE_FOR_MAX_GAIN;
+
+    chParams->ctrlParams.agc.enable = 0;
+
+    chParams->tunerParams.dcOffsetTuner.dcCal = 4;
+    chParams->tunerParams.dcOffsetTuner.speedUp = 0;
+    chParams->tunerParams.dcOffsetTuner.trackTime = 63;
+
+    if((chosenDev->hwVer != SDRPLAY_RSPduo_ID) || (chosenDev->rspDuoMode != sdrplay_api_RspDuoMode_Slave)) {
+        deviceParams->devParams->fsFreq.fsHz = 8.0 * 1e6;
+    }
+
+    if((chosenDev->hwVer == SDRPLAY_RSPduo_ID) && (chosenDev->rspDuoMode & sdrplay_api_RspDuoMode_Slave)) {
+        if(chosenDev->rspDuoSampleFreq != 8000000.0) {
+            if(Modes.interactive) {
+                Modes.interactive = 0;
+            }
+            fprintf(stderr, "\nError: RSPduo Master tuner in use and is not running in ADS-B compatible mode.\nSet the Master tuner to ADS-B compatible mode and restart dump1090\n\n");
+            return 1;
+        }
+    }
+
+    if(chosenDev->hwVer == SDRPLAY_RSP1A_ID) {
+        chParams->rsp1aTunerParams.biasTEnable = Modes.enable_biasT;
+        deviceParams->devParams->rsp1aParams.rfNotchEnable = (1 - Modes.disableBroadcastNotch);
+        deviceParams->devParams->rsp1aParams.rfDabNotchEnable = (1 - Modes.disableDabNotch);
+    }
+    else if(chosenDev->hwVer == SDRPLAY_RSP2_ID) {
+        chParams->rsp2TunerParams.biasTEnable = Modes.enable_biasT;
+        chParams->rsp2TunerParams.rfNotchEnable = (1 - Modes.disableBroadcastNotch);
+        chParams->rsp2TunerParams.amPortSel = sdrplay_api_Rsp2_AMPORT_2;
+        chParams->rsp2TunerParams.antennaSel = Modes.antenna_port;
+    }
+    else if(chosenDev->hwVer == SDRPLAY_RSPdx_ID) {
+        deviceParams->devParams->rspDxParams.biasTEnable = Modes.enable_biasT;
+        deviceParams->devParams->rspDxParams.rfNotchEnable = (1 - Modes.disableBroadcastNotch);
+        deviceParams->devParams->rspDxParams.antennaSel = Modes.Dxantenna_port;
+        deviceParams->devParams->rspDxParams.rfDabNotchEnable = (1 - Modes.disableDabNotch);
+    }
+    else if(chosenDev->hwVer == SDRPLAY_RSPduo_ID) {
+        chParams->rspDuoTunerParams.biasTEnable = Modes.enable_biasT;
+        chParams->rspDuoTunerParams.rfNotchEnable = (1 - Modes.disableBroadcastNotch);
+        chParams->rspDuoTunerParams.rfDabNotchEnable = (1 - Modes.disableDabNotch);
+    }
+
+    switch (Modes.adsbMode) {
+        case 0: chParams->ctrlParams.adsbMode = sdrplay_api_ADSB_DECIMATION; break;
+        case 1: chParams->ctrlParams.adsbMode = sdrplay_api_ADSB_NO_DECIMATION_LOWPASS; break;
+        case 2: chParams->ctrlParams.adsbMode = sdrplay_api_ADSB_NO_DECIMATION_BANDPASS_2MHZ; break;
+        case 3: chParams->ctrlParams.adsbMode = sdrplay_api_ADSB_NO_DECIMATION_BANDPASS_3MHZ; break;
+    }
 
     if (Modes.ifMode == 0)
     {
-        if (Modes.oversample == 0)
-            err |= mir_sdr_DecimateControl(1, 4, 0);        // enable, decimate by 4, wideband=0
+        if (Modes.oversample == 0) {
+            chParams->ctrlParams.decimation.enable = 1;
+            chParams->ctrlParams.decimation.decimationFactor = 4;
+        }
+        else
+        {
+            chParams->ctrlParams.adsbMode = sdrplay_api_ADSB_DECIMATION;
+        }
     }
 
-    err |= mir_sdr_AgcControl(mir_sdr_AGC_DISABLE, 0, 0, 0, 0, 0, LNA_STATE_FOR_MAX_GAIN);           // disable agc
-    if (err){
-            fprintf(stderr, "RSP settings failed, %d\n", err);
-            return (1);
-    }  
-    
-    return (0);
+    err = sdrplay_api_Init(chosenDev->dev, &cbFns, NULL);
+    if (err) {
+        if(Modes.interactive) {
+            Modes.interactive = 0;
+        }
+        if(err == sdrplay_api_StartPending) {
+            fprintf(stderr, "\ndump1090 run as a slave will only begin to receive data when the master\nstream is running. Please start the master stream (e.g. press PLAY in SDRuno)\nand then restart dump1090.\n\n");
+            return 1;
+        }
+        fprintf(stderr, "dump1090: Init error (%s)\n", sdrplay_api_GetErrorString(err));
+        return 1;
+    }
+
+    chParams->tunerParams.rfFreq.rfHz = 1090.0 * 1e6;
+    err = sdrplay_api_Update(chosenDev->dev, chosenDev->tuner, sdrplay_api_Update_Tuner_Frf, sdrplay_api_Update_Ext1_None);
+    if (err != sdrplay_api_Success) {
+        if(Modes.interactive) {
+            Modes.interactive = 0;
+        }
+        fprintf(stderr, "dump1090: Frf update error (%s)\n", sdrplay_api_GetErrorString(err));
+        return 1;
+    }
+
+    return 0;
 }
 
 #endif
@@ -792,19 +1079,69 @@ void readDataFromFile(void) {
     plus or minus 1dB.
 */
 
-void sdrplayGainCallback(unsigned int gRdB, unsigned int lnaGRdB, void *cbContext)
+void sdrplayEventCallback(sdrplay_api_EventT eventId, sdrplay_api_TunerSelectT tuner, sdrplay_api_EventParamsT *params, void *cbContext)
 {
-    MODES_NOTUSED(gRdB);
-    MODES_NOTUSED(lnaGRdB);
     MODES_NOTUSED(cbContext);
+    sdrplay_api_ErrT err;
+
+    switch(eventId)
+    {
+        case sdrplay_api_GainChange:
+//            fprintf(stderr, "sdrplay_api_EventCb: %s, tuner=%s gRdB=%d lnaGRdB=%d systemGain=%.2f\n", "sdrplay_api_GainChange", (tuner == sdrplay_api_Tuner_A)? "sdrplay_api_Tuner_A": "sdrplay_api_Tuner_B", params->gainParams.gRdB, params->gainParams.lnaGRdB, params->gainParams.currGain);
+            break;
+        case sdrplay_api_PowerOverloadChange:
+//            fprintf(stderr, "sdrplay_api_PowerOverloadChange: %s, tuner=%s powerOverloadChangeType=%s\n", "sdrplay_api_AgcEvent", (tuner == sdrplay_api_Tuner_A)? "sdrplay_api_Tuner_A": "sdrplay_api_Tuner_B", (params->powerOverloadParams.powerOverloadChangeType == sdrplay_api_Overload_Detected)? "sdrplay_api_Overload_Detected": "sdrplay_api_Overload_Corrected");
+            if ((err = sdrplay_api_Update(chosenDev->dev, tuner, sdrplay_api_Update_Ctrl_OverloadMsgAck, sdrplay_api_Update_Ext1_None)) != sdrplay_api_Success)
+            {
+//                fprintf(stderr, "sdrplay_api_Update sdrplay_api_Update_Ctrl_OverloadMsgAck failed %s\n", sdrplay_api_GetErrorString(err));
+            }
+            break;
+        case sdrplay_api_RspDuoModeChange:
+//            fprintf(stderr, "sdrplay_api_EventCb: %s, tuner=%s modeChangeType=%s\n", "sdrplay_api_RspDuoModeChange", (tuner == sdrplay_api_Tuner_A)? "sdrplay_api_Tuner_A": "sdrplay_api_Tuner_B", (params->rspDuoModeParams.modeChangeType == sdrplay_api_MasterInitialised)? "sdrplay_api_MasterInitialised": (params->rspDuoModeParams.modeChangeType == sdrplay_api_SlaveUninitialised)? "sdrplay_api_SlaveUninitialised": (params->rspDuoModeParams.modeChangeType == sdrplay_api_SlaveAttached)? "sdrplay_api_SlaveAttached": (params->rspDuoModeParams.modeChangeType == sdrplay_api_SlaveDetached)? "sdrplay_api_SlaveDetached": "unknown type");
+            if (params->rspDuoModeParams.modeChangeType == sdrplay_api_MasterInitialised)
+            {
+                masterInitialised = 1;
+            }
+            else if (params->rspDuoModeParams.modeChangeType == sdrplay_api_SlaveUninitialised)
+            {
+                slaveUninitialised = 1;
+            }
+            else if (params->rspDuoModeParams.modeChangeType == sdrplay_api_SlaveAttached)
+            {
+                slaveAttached = 1;
+            }
+            else if (params->rspDuoModeParams.modeChangeType == sdrplay_api_SlaveDetached)
+            {
+                slaveAttached = 0;
+            }
+            else if (params->rspDuoModeParams.modeChangeType == sdrplay_api_MasterDllDisappeared)
+            {
+                if (Modes.interactive) {
+                    Modes.interactive = 0;
+                }
+                sdrplay_api_Uninit(chosenDev->dev);
+                sdrplay_api_ReleaseDevice(chosenDev);
+                sdrplay_api_Close();
+                fprintf(stderr, "\nThe master stream no longer exists, which means that this slave stream has been\nstopped and the slave application will need to be closed before the stream can\nbe restarted. This has probably occurred because the master application has\neither been closed or has crashed. Please always ensure that the slave\napplication is closed before closing down or killing the master application.\n\nThis application will now exit\n");
+                exit(1);
+            }
+            else if (params->rspDuoModeParams.modeChangeType == sdrplay_api_SlaveDllDisappeared)
+            {
+                slaveAttached = 0;
+            }
+            break;
+        case sdrplay_api_DeviceRemoved:
+//            fprintf(stderr, "sdrplay_api_EventCb: %s\n", "sdrplay_api_DeviceRemoved");
+            break;
+        default:
+//            fprintf(stderr, "sdrplay_api_EventCb: %d, unknown event\n", eventId);
+            break;
+    }
 }
 
-void sdrplayCallback(short *xi, short *xq, unsigned int firstSampleNum, int grChanged, int rfChanged, int fsChanged, unsigned int numSamples, unsigned int reset, void *cbContext)
+void sdrplayCallbackA(short *xi, short *xq, sdrplay_api_StreamCbParamsT *params, unsigned int numSamples, unsigned int reset, void *cbContext)
 {
-    MODES_NOTUSED(firstSampleNum);
-    MODES_NOTUSED(grChanged);
-    MODES_NOTUSED(rfChanged);
-    MODES_NOTUSED(fsChanged);
+    MODES_NOTUSED(params);
     MODES_NOTUSED(reset);
     MODES_NOTUSED(cbContext);
 
@@ -826,7 +1163,7 @@ void sdrplayCallback(short *xi, short *xq, unsigned int firstSampleNum, int grCh
 
     end = data_index + (numSamples << 1);
     count2 = end - (MODES_RSP_BUF_SIZE * MODES_RSP_BUFFERS);
-    if (count2 < 0) count2 = 0;                                                 /* count2 is samples wrapping around to start of buf */
+    if (count2 < 0) count2 = 0;            /* count2 is samples wrapping around to start of buf */
 
     count1 = (numSamples << 1) - count2;   /* count1 is samples fitting before the end of buf */
 
@@ -842,10 +1179,12 @@ void sdrplayCallback(short *xi, short *xq, unsigned int firstSampleNum, int grCh
     for (i = (count1 >> 1) - 1; i >= 0; i--)
     {
         sig_i = xi[input_index];
-        dptr[data_index++] = sig_i;
+        if(dptr != NULL)
+            dptr[data_index++] = sig_i;
 
         sig_q = xq[input_index++];
-        dptr[data_index++] = sig_q;
+        if(dptr != NULL)
+            dptr[data_index++] = sig_q;
 
         if (sig_i > max_sig) max_sig = sig_i;
     }
@@ -865,10 +1204,14 @@ void sdrplayCallback(short *xi, short *xq, unsigned int firstSampleNum, int grCh
 
         /* adjust gain if required */
         if (max_sig > RSP_MAX_GAIN_THRESH) {
-            mir_sdr_RSP_SetGr(1, LNA_STATE_FOR_MAX_GAIN, 0, 0);
+            chParams->tunerParams.gain.gRdB += 1;
+            if (chParams->tunerParams.gain.gRdB > 59) chParams->tunerParams.gain.gRdB = 59;
+            sdrplay_api_Update(chosenDev->dev, chosenDev->tuner, sdrplay_api_Update_Tuner_Gr, sdrplay_api_Update_Ext1_None);
         }
         if (max_sig < RSP_MIN_GAIN_THRESH) {
-            mir_sdr_RSP_SetGr(-1, LNA_STATE_FOR_MAX_GAIN, 0, 0);
+            chParams->tunerParams.gain.gRdB -= 1;
+            if (chParams->tunerParams.gain.gRdB < 0) chParams->tunerParams.gain.gRdB = 0;
+            sdrplay_api_Update(chosenDev->dev, chosenDev->tuner, sdrplay_api_Update_Tuner_Gr, sdrplay_api_Update_Ext1_None);
         }
     }
 
@@ -901,6 +1244,16 @@ void sdrplayCallback(short *xi, short *xq, unsigned int firstSampleNum, int grCh
     Modes.data_index = data_index;
 }
 
+void sdrplayCallbackB(short *xi, short *xq, sdrplay_api_StreamCbParamsT *params, unsigned int numSamples, unsigned int reset, void *cbContext)
+{
+    MODES_NOTUSED(xi);
+    MODES_NOTUSED(xq);
+    MODES_NOTUSED(params);
+    MODES_NOTUSED(numSamples);
+    MODES_NOTUSED(reset);
+    MODES_NOTUSED(cbContext);
+}
+
 #endif
 
 
@@ -913,6 +1266,8 @@ void sdrplayCallback(short *xi, short *xq, unsigned int firstSampleNum, int grCh
 
 void *readerThreadEntryPoint(void *arg) {
     MODES_NOTUSED(arg);
+
+    sdrplay_api_ErrT err;
 
     start_cpu_timing(&reader_thread_start); // we accumulate in rtlsdrCallback() or readDataFromFile()
 
@@ -951,8 +1306,23 @@ void *readerThreadEntryPoint(void *arg) {
             if (modesInitSDRplay() == 0)
             {
                 pthread_cond_wait(&Modes.exit_cond, &Modes.exit_mutex); // wait for an exit signal
-                mir_sdr_StreamUninit();
-                mir_sdr_ReleaseDeviceIdx();
+            }
+            else
+            {
+                err = sdrplay_api_ReleaseDevice(chosenDev);
+                if (err != sdrplay_api_Success) {
+                    if (Modes.interactive) {
+                        Modes.interactive = 0;
+                    }
+                    fprintf(stderr, "sdrplay_api_ReleaseDevice error: %s\n", sdrplay_api_GetErrorString(err));
+                }
+                err = sdrplay_api_Close();
+                if (err != sdrplay_api_Success) {
+                    if (Modes.interactive) {
+                        Modes.interactive = 0;
+                    }
+                    fprintf(stderr, "sdrplay_api_Close error: %s\n", sdrplay_api_GetErrorString(err));
+                }
             }
         }
 #endif
@@ -1000,79 +1370,86 @@ void snipMode(int level) {
 //
 void showHelp(void) {
     printf(
-"-----------------------------------------------------------------------------\n"
+"-------------------------------------------------------------------------------\n"
 "| dump1090 ModeS Receiver     %45s |\n"
-"-----------------------------------------------------------------------------\n"
-"--device-index <index>   Select RTL device (default: 0)\n"
+"-------------------------------------------------------------------------------\n"
+"--device-index <index>     Select RTL device (default: 0)\n"
 #ifdef SDRPLAY
-"--dev-sdrplay            use RSP device instead of RTL device (default: RTL).\n"
-"--normal                 Ignore settings and set up RSP for ZeroIF 2MHz Demod.\n"
-"--ifMode                 IF Mode (0: ZIF, 1: LIF) (default: 0).\n"
-"--bwMode                 BW Mode (0: 1.536MHz, 1: 5MHz) (default: 1).\n"
+"--dev-sdrplay              use RSP device instead of RTL device (default: RTL).\n"
+"--ifMode                   IF Mode (0: ZIF, 1: LIF) (default: 0).\n"
+"--bwMode                   BW Mode (0: 1.536MHz, 1: 5MHz) (default: 1).\n"
 #endif
-"--gain <db>              Set gain (default: max gain. Use -10 for auto-gain)\n"
-"--enable-agc             Enable the Automatic Gain Control (default: RTL:off, RSP:on)\n"
-"--freq <hz>              Set frequency (default: 1090 Mhz)\n"
-"--ifile <filename>       Read data from file (use '-' for stdin)\n"
-"--iformat <format>       Sample format for --ifile: UC8 (default), SC16, SC16int, or SC16Q11\n"
-"--throttle               When reading from a file, play back in realtime, not at max speed\n"
-"--interactive            Interactive mode refreshing data on screen. Implies --throttle\n"
-"--interactive-rows <num> Max number of rows in interactive mode (default: 15)\n"
-"--interactive-ttl <sec>  Remove from list if idle for <sec> (default: 60)\n"
-"--interactive-rtl1090    Display flight table in RTL1090 format\n"
-"--raw                    Show only messages hex values\n"
-"--net                    Enable networking\n"
-"--modeac                 Enable decoding of SSR Modes 3/A & 3/C\n"
-"--net-only               Enable just networking, no SDR device or file used\n"
-"--net-bind-address <ip>  IP address to bind to (default: Any; Use 127.0.0.1 for private)\n"
-"--net-http-port <ports>  HTTP server ports (default: 8080)\n"
-"--net-ri-port <ports>    TCP raw input listen ports  (default: 30001)\n"
-"--net-ro-port <ports>    TCP raw output listen ports (default: 30002)\n"
-"--net-sbs-port <ports>   TCP BaseStation output listen ports (default: 30003)\n"
-"--net-bi-port <ports>    TCP Beast input listen ports  (default: 30004,30104)\n"
-"--net-bo-port <ports>    TCP Beast output listen ports (default: 30005)\n"
-"--net-ro-size <size>     TCP output minimum size (default: 0)\n"
-"--net-ro-interval <rate> TCP output memory flush rate in seconds (default: 0)\n"
-"--net-heartbeat <rate>   TCP heartbeat rate in seconds (default: 60 sec; 0 to disable)\n"
-"--net-buffer <n>         TCP buffer size 64Kb * (2^n) (default: n=0, 64Kb)\n"
-"--net-verbatim           Do not apply CRC corrections to messages we forward; send unchanged\n"
-"--forward-mlat           Allow forwarding of received mlat results to output ports\n"
-"--lat <latitude>         Reference/receiver latitude for surface posn (opt)\n"
-"--lon <longitude>        Reference/receiver longitude for surface posn (opt)\n"
-"--max-range <distance>   Absolute maximum range for position decoding (in nm, default: 300)\n"
-"--fix                    Enable single-bits error correction using CRC\n"
-"--no-fix                 Disable single-bits error correction using CRC\n"
-"--no-crc-check           Disable messages with broken CRC (discouraged)\n"
-"--phase-enhance          Enable phase enhancement\n"
+"--gain <db>                Set gain (default: max gain. Use -10 for auto-gain)\n"
+"--enable-agc               Enable the Automatic Gain Control (default: RTL:off, RSP:on)\n"
+"--freq <hz>                Set frequency (default: 1090 Mhz)\n"
+"--ifile <filename>         Read data from file (use '-' for stdin)\n"
+"--iformat <format>         Sample format for --ifile: UC8 (default), SC16, SC16int, or SC16Q11\n"
+"--throttle                 When reading from a file, play back in realtime, not at max speed\n"
+"--interactive              Interactive mode refreshing data on screen. Implies --throttle\n"
+"--interactive-rows <num>   Max number of rows in interactive mode (default: 15)\n"
+"--interactive-ttl <sec>    Remove from list if idle for <sec> (default: 60)\n"
+"--interactive-rtl1090      Display flight table in RTL1090 format\n"
+"--raw                      Show only messages hex values\n"
+"--net                      Enable networking\n"
+"--modeac                   Enable decoding of SSR Modes 3/A & 3/C\n"
+"--net-only                 Enable just networking, no SDR device or file used\n"
+"--net-bind-address <ip>    IP address to bind to (default: Any; Use 127.0.0.1 for private)\n"
+"--net-http-port <ports>    HTTP server ports (default: 8080)\n"
+"--net-ri-port <ports>      TCP raw input listen ports  (default: 30001)\n"
+"--net-ro-port <ports>      TCP raw output listen ports (default: 30002)\n"
+"--net-sbs-port <ports>     TCP BaseStation output listen ports (default: 30003)\n"
+"--net-bi-port <ports>      TCP Beast input listen ports  (default: 30004,30104)\n"
+"--net-bo-port <ports>      TCP Beast output listen ports (default: 30005)\n"
+"--net-ro-size <size>       TCP output minimum size (default: 0)\n"
+"--net-ro-interval <rate>   TCP output memory flush rate in seconds (default: 0)\n"
+"--net-heartbeat <rate>     TCP heartbeat rate in seconds (default: 60 sec; 0 to disable)\n"
+"--net-buffer <n>           TCP buffer size 64Kb * (2^n) (default: n=0, 64Kb)\n"
+"--net-verbatim             Do not apply CRC corrections to messages we forward; send unchanged\n"
+"--forward-mlat             Allow forwarding of received mlat results to output ports\n"
+"--lat <latitude>           Reference/receiver latitude for surface posn (opt)\n"
+"--lon <longitude>          Reference/receiver longitude for surface posn (opt)\n"
+"--max-range <distance>     Absolute maximum range for position decoding (in nm, default: 300)\n"
+"--fix                      Enable single-bits error correction using CRC\n"
+"--no-fix                   Disable single-bits error correction using CRC\n"
+"--no-crc-check             Disable messages with broken CRC (discouraged)\n"
+"--phase-enhance            Enable phase enhancement\n"
 #ifdef ALLOW_AGGRESSIVE
-"--aggressive             More CPU for more messages (two bits fixes, ...)\n"
+"--aggressive               More CPU for more messages (two bits fixes, ...)\n"
 #endif
-"--mlat                   display raw messages in Beast ascii mode\n"
-"--stats                  With --ifile print stats at exit. No other output\n"
-"--stats-range            Collect/show range histogram\n"
-"--stats-every <seconds>  Show and reset stats every <seconds> seconds\n"
-"--onlyaddr               Show only ICAO addresses (testing purposes)\n"
-"--metric                 Use metric units (meters, km/h, ...)\n"
-"--hae                    Show altitudes as HAE (with H suffix) when available\n"
-"--snip <level>           Strip IQ file removing samples < level\n"
-"--debug <flags>          Debug mode (verbose), see README for details\n"
-"--quiet                  Disable output to stdout. Use for daemon applications\n"
-"--show-only <addr>       Show only messages from the given ICAO on stdout\n"
-"--ppm <error>            Set receiver error in parts per million (default 0)\n"
-"--html-dir <dir>         Use <dir> as base directory for the internal HTTP server. Defaults to " HTMLPATH "\n"
-"--write-json <dir>       Periodically write json output to <dir> (for serving by a separate webserver)\n"
-"--write-json-every <t>   Write json output every t seconds (default 1)\n"
-"--json-location-accuracy <n>  Accuracy of receiver location in json metadata: 0=no location, 1=approximate, 2=exact\n"
-"--oversample             Use the 2.4MHz(RTL) / 8MHz(RSP) demodulator\n"
-"--dcfilter               Apply a 1Hz DC filter to input data (requires lots more CPU)\n"
-"--measure-noise          Measure noise power (requires slightly more CPU)\n"
+"--mlat                     display raw messages in Beast ascii mode\n"
+"--stats                    With --ifile print stats at exit. No other output\n"
+"--stats-range              Collect/show range histogram\n"
+"--stats-every <seconds>    Show and reset stats every <seconds> seconds\n"
+"--onlyaddr                 Show only ICAO addresses (testing purposes)\n"
+"--metric                   Use metric units (meters, km/h, ...)\n"
+"--hae                      Show altitudes as HAE (with H suffix) when available\n"
+"--snip <level>             Strip IQ file removing samples < level\n"
+"--debug <flags>            Debug mode (verbose), see README for details\n"
+"--quiet                    Disable output to stdout. Use for daemon applications\n"
+"--show-only <addr>         Show only messages from the given ICAO on stdout\n"
+"--ppm <error>              Set receiver error in parts per million (default 0)\n"
+"--html-dir <dir>           Use <dir> as base directory for the internal HTTP server. Defaults to " HTMLPATH "\n"
+"--write-json <dir>         Periodically write json output to <dir> (for serving by a separate webserver)\n"
+"--write-json-every <t>     Write json output every t seconds (default 1)\n"
+"--json-location-accuracy   <n>  Accuracy of receiver location in json metadata: 0=no location, 1=approximate, 2=exact\n"
+"--oversample               Use the 2.4MHz(RTL) / 8MHz(RSP) demodulator\n"
+"--dcfilter                 Apply a 1Hz DC filter to input data (requires lots more CPU)\n"
+"--measure-noise            Measure noise power (requires slightly more CPU)\n"
 #ifdef SDRPLAY
 "--rsp-device-serNo <serNo> Used to select between multiple devices when more than one RSP device is present\n"
-"--rsp2-antenna-portA     Select Antenna Port A on RSP2 (default Antenna Port B)\n"
-"--enable-biasT      Enable BiasT network on RSP2 Antenna Port B or RSP1A\n"
-"--rsp1aNotchEn      Enable Broadcast notch on RSP1A (default 0)\n"
+"--rsp2-antenna-portA       Select Antenna Port A on RSP2 (default Antenna Port B)\n"
+"--rspdx-antenna-portA      Select Antenna Port A on RSPdx (default Antenna Port B)\n"
+"--rspduo-tuner1            Select Tuner 1 on RSPduo (default Tuner 2 if Master or Single Tuner)\n"
+"--rspduo-single            Use Single Tuner mode for RSPduo if available (default Master/Slave mode)\n"
+"--adsbMode                 Set SDRplay ADSB mode (default 1 for ZIF and 2 for LIF)\n"
+"--enable-biasT             Enable BiasT network on RSP2/RSPdx Antenna Port B or RSP1A or RSPduo Tuner 2\n"
+"--disable-broadcast-notch  Disable Broadcast notch filter (RSP1A/RSP2/RSPdx/RSPduo)\n"
+"--disable-dab-notch        Disable DAB notch filter (RSP1A/RSPdx/RSPduo)\n"
 #endif
-"--help                   Show this help\n"
+"--help                     Show this help\n"
+"\n"
+"ADSB Modes 0 = ADSB_DECIMATION, 1 = ADSB_NO_DECIMATION_LOWPASS, 2 = ADSB_NO_DECIMATION_BANDPASS_2MHZ\n"
+"           3 = ADSB_NO_DECIMATION_BANDPASS_3MHZ\n"
 "\n"
 "Debug mode flags: d = Log frames decoded with errors\n"
 "                  D = Log frames decoded with zero errors\n"
@@ -1263,6 +1640,10 @@ int verbose_device_search(char *s)
 int main(int argc, char **argv) {
     int j;
 
+    cbFns.StreamACbFn = sdrplayCallbackA;
+    cbFns.StreamBCbFn = sdrplayCallbackB;
+    cbFns.EventCbFn = sdrplayEventCallback;
+
     // Set sane defaults
     modesInitConfig();
 
@@ -1279,11 +1660,6 @@ int main(int argc, char **argv) {
 #ifdef SDRPLAY
         } else if (!strcmp(argv[j],"--dev-sdrplay")) {
             Modes.use_sdrplay = 1; Modes.use_rtlsdr = 0;
-        } else if (!strcmp(argv[j],"--normal")) {
-            Modes.use_sdrplay = 1;
-            Modes.oversample = 0;
-            Modes.ifMode = 0;
-            Modes.bwMode = 1;
 #endif
         } else if (!strcmp(argv[j],"--gain") && more) {
             Modes.gain = (int) (atof(argv[++j])*10); // Gain is in tens of DBs
@@ -1442,10 +1818,20 @@ int main(int argc, char **argv) {
             Modes.bwMode = atoi(argv[++j]);
         } else if (!strcmp(argv[j], "--enable-biasT")) {
             Modes.enable_biasT = 1;
-        } else if (!strcmp(argv[j], "--rsp1aNotchEn") && more) {
-            Modes.rsp1aNotchEn = atoi(argv[++j]);
+        } else if (!strcmp(argv[j], "--disable-broadcast-notch")) {
+            Modes.disableBroadcastNotch = 1;
+        } else if (!strcmp(argv[j], "--disable-dab-notch")) {
+            Modes.disableDabNotch = 1;
         } else if (!strcmp(argv[j], "--rsp2-antenna-portA")) {
-            Modes.antenna_port = mir_sdr_RSPII_ANTENNA_A;
+            Modes.antenna_port = sdrplay_api_Rsp2_ANTENNA_A;
+        } else if (!strcmp(argv[j], "--rspdx-antenna-portA")) {
+            Modes.Dxantenna_port = sdrplay_api_RspDx_ANTENNA_A;
+        } else if (!strcmp(argv[j], "--rspduo-tuner1")) {
+            Modes.tuner = sdrplay_api_Tuner_A;
+        } else if (!strcmp(argv[j], "--adsbMode")) {
+            Modes.adsbMode = atoi(argv[++j]);
+        } else if (!strcmp(argv[j], "--rspduo-single")) {
+            Modes.mode = sdrplay_api_RspDuoMode_Single_Tuner;
         } else if (!strcmp(argv[j], "--rsp-device-serNo")) {
             if (argv[j + 1] != NULL)
             {
@@ -1651,7 +2037,7 @@ int main(int argc, char **argv) {
 //#ifndef _WIN32
 //    pthread_exit(0);
 //#else
-    return (0);
+    return 0;
 //#endif
 }
 //

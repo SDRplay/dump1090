@@ -1,0 +1,9 @@
+
+*.o
+*.dll
+*.gz
+*.docx
+*.pdf
+drawing.h
+testbench.c
+*.stackdump
