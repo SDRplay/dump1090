@@ -1,3 +1,9 @@
+The latest version number of this particular build of dump1090 is 1.47
+
+The following README is from the original dump1090 project that this was forked from for reference. None of the build instructions below reflect this fork and will not have the RSP extensions. This version supports ALL RSPs
+
+-------------------------------------------------
+
 # dump1090-mutability Debian/Raspbian packages
 [![Build Status](https://travis-ci.org/mutability/dump1090.svg?branch=master)](https://travis-ci.org/mutability/dump1090)
 
