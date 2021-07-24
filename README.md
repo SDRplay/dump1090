@@ -1,4 +1,4 @@
-# dump1090-mutability Debian/Raspbian packages
+# dump1090-sdrplay Debian/Raspbian ARM packages
 [![Build Status](https://travis-ci.org/mutability/dump1090.svg?branch=master)](https://travis-ci.org/mutability/dump1090)
 
 This is a fork of mutability's archived version of dump1090
