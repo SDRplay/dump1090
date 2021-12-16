@@ -231,7 +231,7 @@ typedef void *HANDLE;
 #include "cpr.h"
 #include "icao_filter.h"
 #include "convert.h"
-#include "sdrplay_api.h"
+#include <sdrplay_api.h>
 
 //======================== structure declarations =========================
 
