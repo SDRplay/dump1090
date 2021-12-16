@@ -1,7 +1,7 @@
-# dump1090-sdrplay Debian/Raspbian ARM packages
+# dump1090-mutability Debian/Raspbian packages
 [![Build Status](https://travis-ci.org/mutability/dump1090.svg?branch=master)](https://travis-ci.org/mutability/dump1090)
 
-This is a fork of mutability's archived version of dump1090
+This is a fork of MalcolmRobb's version of dump1090
 that adds new functionality and is designed to be built as
 a Debian/Raspbian package.
 
@@ -20,8 +20,48 @@ See the file COPYING for details.
 * tries to do things "the debian way" when it comes to config, package structure, etc
 * probably a bunch of other things I've forgotten..
 
-# Installation
-We recomand using our ARM iso images that can be downloaded from (here)[https://www.sdrplay.com/raspberry-pi-images/]
+# Simple install via apt-get
+
+There is a repository that contains the current releases. To set up the repository:
+
+````
+$ wget https://github.com/mutability/mutability-repo/releases/download/v0.1.0/mutability-repo_0.1.0_armhf.deb
+$ sudo dpkg -i mutability-repo_0.1.0_armhf.deb
+````
+
+Then you can install and upgrade packages via apt-get as needed:
+
+````
+$ sudo apt-get update && sudo apt-get install dump1090-mutability
+$ sudo dpkg-reconfigure dump1090-mutability                           # for detailed configuration
+$ sudo apt-get install lighttpd && sudo lighty-enable-mod dump1090    # if you want to use the external webserver integration
+````
+
+Installing the mutability-repo package also installs the public key used to sign the packages; the signatures will be verified automatically by apt-get.
+
+# Manual repository setup
+
+Add a suitable entry to sources.list:
+
+````
+# echo "deb http://repo.mutability.co.uk/raspbian wheezy rpi" >/etc/apt/sources.list.d/mutabiltiy.list
+````
+
+Obtain the public key used to sign the repository release by a method of your choice. This is the signing key:
+
+````
+pub   2048R/4D731812 2014-12-28 [expires: 2015-12-28]
+      Key fingerprint = 2098 7C8D D31A 6107 E033  7CC3 80D5 57AA 4D73 1812
+uid                  Oliver Jowett (repo.mutability.co.uk archive signing key) <oliver@mutability.co.uk>
+````
+
+which is available from:
+
+ * [GitHub](https://github.com/mutability/mutability-repo/raw/master/mutability.gpg)
+ * [repo.mutability.co.uk](http://repo.mutability.co.uk/mutability.gpg) (caution - not HTTPS!)
+ * keys.gnupg.net (`gpg --keyserver keys.gnupg.net --recv-keys 4D731812`)
+
+Install the key with `apt-key add` or by placing the keyring in `/etc/apt/trusted.gpg.d/`
 
 # Manual installation
 
@@ -50,7 +90,6 @@ Notable defaults that are perhaps not what you'd first expect:
 To reconfigure, either use `dpkg-reconfigure dump1090-mutability` or edit `/etc/default/dump1090-mutability`. Both should be self-explanatory.
 
 ## External webserver configuration
-### the information provided below may be outdated 
 
 This is the recommended configuration; a dedicated webserver is almost always going to be better and more secure than the collection of hacks that is the dump1090 webserver.
 It works by having dump1090 write json files to a path under `/run` once a second (this is on tmpfs and will not write to the sdcard).
@@ -88,6 +127,13 @@ Packages following the same model for MalcolmRobb & FlightAware's forks of dump1
 So is a repackaged version of piaware.
 
 # Building from source
+
+While there is a Makefile that you can use, the preferred way to build is via the Debian package building system:
+
+````
+$ sudo apt-get install librtlsdr-dev libusb-1.0-0-dev pkg-config debhelper
+$ dpkg-buildpackage -b
+````
 
 Or you can use debuild/pdebuild. I find building via qemubuilder quite effective for building images for Raspbian (it's actually faster to build on an emulated ARM running on my PC than to build directly on real hardware).
 
