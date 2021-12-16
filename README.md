@@ -10,7 +10,7 @@ This build also still supports the `RTL-SDR` device and so the `RTL-SDR` library
 
 ## Build from source
 
-    $ git clone https://github.com/SDRplay/dump1090<br />
+    $ git clone https://github.com/SDRplay/dump1090
     $ cd dump1090
 
 NOTE: BEFORE BUILDING CHECK PATHS IN THE Makefile...
