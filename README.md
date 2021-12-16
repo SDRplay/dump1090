@@ -1,13 +1,17 @@
-The latest version number of this particular build of dump1090 is 1.47
+# DUMP1090
 
-This build supports all RSPs and requires API 3.x which can be downloaded from the SDRplay Downloads page: https://www.sdrplay.com/downloads
+The latest version number of this particular build of `dump1090` is `1.47`
 
-This build also still supports the RTL-SDR device and so the RTL-SDR library needs to be installed also.
+This build supports all RSPs and requires API `3.x` which can be downloaded from the `SDRplay`
 
-To build this version from source:
+Downloads page: https://www.sdrplay.com/downloads
 
-prompt# git clone https://github.com/SDRplay/dump1090<br />
-prompt# cd dump1090
+This build also still supports the `RTL-SDR` device and so the `RTL-SDR` library needs to be installed also.
+
+## Build from source
+
+    $ git clone https://github.com/SDRplay/dump1090<br />
+    $ cd dump1090
 
 NOTE: BEFORE BUILDING CHECK PATHS IN THE Makefile...
 
@@ -17,11 +21,19 @@ SDRPLAY_LIBS: If you have problems with linking to the API dll, add the path her
 
 There are examples of the SDRPlay variables if building on Cygwin,n the Makefile. They may not be required if building on Linux
 
-prompt# make dump1090
+    $ SDRPLAY=1 make dump1090
 
-To build on Windows, use Cygwin - note: after building under Cygwin you may need to specify the path to the API dll, or add the API dll path to your system path. An example of how to do this on the command line is...
+To build on Windows, use Cygwin - note: after building under Cygwin you may need to specify the path to the API dll,
+or add the API dll path to your system path. An example of how to do this on the command line is...
 
-prompt# PATH="/cygdrive/c/program files/sdrplay/api/x86":$PATH ./dump1090.exe
+    $ PATH="/cygdrive/c/program files/sdrplay/api/x86":$PATH ./dump1090.exe
+
+## Usage example 
+
+You should specify SDRPlay at start:
+
+    $ ./dump1090 --dev-sdrplay
+
 
 -------------------------------------------------
 
