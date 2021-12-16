@@ -6,22 +6,22 @@ This build also still supports the RTL-SDR device and so the RTL-SDR library nee
 
 To build this version from source:
 
-git clone https://github.com/SDRplay/dump1090
-cd dump1090
+prompt# git clone https://github.com/SDRplay/dump1090<br />
+prompt# cd dump1090
 
 NOTE: BEFORE BUILDING CHECK PATHS IN THE Makefile...
 
-PKG_CONFIG_PATH: add the path to the librtlsdr.pc file
-SDRPLAY_CFLAGS: If you have problems including the API header files, add the path to the API inc directory here
-SDRPLAY_LIBS: If you have problems with linking to the API dll, add the path here
+PKG_CONFIG_PATH: add the path to the librtlsdr.pc file<br />
+SDRPLAY_CFLAGS: If you have problems including the API header files, add the path to the API inc directory here<br />
+SDRPLAY_LIBS: If you have problems with linking to the API dll, add the path here<br />
 
 There are examples of the SDRPlay variables if building on Cygwin,n the Makefile. They may not be required if building on Linux
 
-make dump1090
+prompt# make dump1090
 
 To build on Windows, use Cygwin - note: after building under Cygwin you may need to specify the path to the API dll, or add the API dll path to your system path. An example of how to do this on the command line is...
 
-PATH="/cygdrive/c/program files/sdrplay/api/x86":$PATH ./dump1090.exe
+prompt# PATH="/cygdrive/c/program files/sdrplay/api/x86":$PATH ./dump1090.exe
 
 -------------------------------------------------
 
