@@ -23,9 +23,7 @@ SDRPLAY_CFLAGS= -DSDRPLAY -I./
 endif
 
 CPPFLAGS+=-DMODES_DUMP1090_VERSION=\"$(DUMP1090_VERSION)\"
-CFLAGS+= -O3 -g -Wall -Wextra -pedantic -W -static
-#CFLAGS+= -O0 -g -Wall -Werror -W -static -ggdb
-#CFLAGS+= -g -Wall -Werror -W
+CFLAGS+= -O2 -g -Wall -Werror -W
 CFLAGS+=$(SDRPLAY_CFLAGS)
 LIBS= -L./ -lsdrplay_api -lpthread -lm -lrtlsdr
 LIBS+=$(SDRPLAY_LIBS)
@@ -36,11 +34,23 @@ UNAME := $(shell uname)
 
 ifeq ($(UNAME), Linux)
 LIBS+=-lrt
+CFLAGS+=-std=c11 -D_DEFAULT_SOURCE
 endif
 ifeq ($(UNAME), Darwin)
-# TODO: Putting GCC in C11 mode breaks things.
-CFLAGS+=-std=c11
+UNAME_R := $(shell uname -r)
+ifeq ($(shell expr "$(UNAME_R)" : '1[012345]\.'),3)
+CFLAGS+=-std=c11 -DMISSING_GETTIME -DMISSING_NANOSLEEP
 COMPAT+=compat/clock_gettime/clock_gettime.o compat/clock_nanosleep/clock_nanosleep.o
+else
+# Darwin 16 (OS X 10.12) supplies clock_gettime() and clockid_t
+CFLAGS+=-std=c11 -DMISSING_NANOSLEEP -DCLOCKID_T
+COMPAT+=compat/clock_nanosleep/clock_nanosleep.o
+endif
+endif
+
+ifeq ($(UNAME), OpenBSD)
+CFLAGS+= -DMISSING_NANOSLEEP
+COMPAT+= compat/clock_nanosleep/clock_nanosleep.o
 endif
 
 all: dump1090 view1090

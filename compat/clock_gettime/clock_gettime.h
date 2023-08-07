@@ -3,6 +3,10 @@
 
 #include <mach/mach_time.h>
 
+#ifdef _CLOCKID_T_DEFINED_
+#define CLOCKID_T
+#endif
+
 #ifndef CLOCKID_T
 #define CLOCKID_T
 typedef enum
