@@ -118,7 +118,7 @@ void interactiveShowData(void) {
               || (((flags & (MODEAC_MSG_MODES_HIT | MODEAC_MSG_MODEC_OLD )) == 0                    ) && (msgs > 127) ) 
               ) {
                 char strSquawk[5] = " ";
-                char strFl[7]     = " ";
+                char strFl[12]    = " ";
                 char strTt[5]     = " ";
                 char strGs[5]     = " ";
 
@@ -137,7 +137,7 @@ void interactiveShowData(void) {
                 if (Modes.interactive_rtl1090) { // RTL1090 display mode
 
                     if (a->bFlags & MODES_ACFLAGS_ALTITUDE_VALID) {
-                        snprintf(strFl,6,"F%03d",(a->altitude/100));
+                        snprintf(strFl,11,"F%03d",(a->altitude/100));
                     }
                     printf("%06x %-8s %-4s         %-3s %-3s %4s        %-6d  %-2.0f\n", 
                            a->addr, a->flight, strFl, strGs, strTt, strSquawk, msgs, (now - a->seen)/1000.0);

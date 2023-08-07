@@ -52,7 +52,7 @@
 
 // Default version number, if not overriden by the Makefile
 #ifndef MODES_DUMP1090_VERSION
-#define MODES_DUMP1090_VERSION     "v1.46-SDRplay"
+#define MODES_DUMP1090_VERSION     "v1.47-SDRplay"
 #endif
 
 #ifndef MODES_DUMP1090_VARIANT
@@ -231,7 +231,7 @@ typedef void *HANDLE;
 #include "cpr.h"
 #include "icao_filter.h"
 #include "convert.h"
-#include "sdrplay_api.h"
+#include <sdrplay_api.h>
 
 //======================== structure declarations =========================
 
