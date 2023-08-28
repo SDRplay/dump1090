@@ -29,6 +29,7 @@ SDRPLAY_CFLAGS=-DSDRPLAY
 #SDRPLAY_CFLAGS+=-I"/cygdrive/c/program files/sdrplay/api/inc"
 endif
 
+CPPFLAGS+=-fcommon
 CPPFLAGS+=-DMODES_DUMP1090_VERSION=\"$(DUMP1090_VERSION)\"
 CFLAGS+= -O2 -g -Wall -Werror -W
 CFLAGS+=$(SDRPLAY_CFLAGS)
