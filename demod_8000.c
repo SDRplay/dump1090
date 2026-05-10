@@ -236,7 +236,45 @@ void demodulate8000(struct mag_buf *mag)
 
                     message_result = decodeModesMessage(&mm, best_msg);
 
-                    if ((mm.addr) && (message_result >= 0)) useModesMessage(&mm);
+                    if (message_result < 0) {
+                        if (message_result == -1)
+                            Modes.stats_current.demod_rejected_unknown_icao++;
+                        else
+                            Modes.stats_current.demod_rejected_bad++;
+                    } else {
+                        Modes.stats_current.demod_accepted[mm.correctedbits]++;
+                    }
+
+                    if ((mm.addr) && (message_result >= 0)) {
+                        // Per-message signal power measurement (RSSI)
+                        // Mirrors demod_2400.c lines 431-449.
+                        // At 8 Msps, 1 bit = D8M_NUM_PHASES (8) samples.
+                        int msg_bits = (mm.msgtype & 0x10) ? MODES_LONG_MSG_BITS : MODES_SHORT_MSG_BITS;
+                        int signal_len = msg_bits * D8M_NUM_PHASES;
+                        // position points PAST the message data (decode loop advances dptr by
+                        // (msg_bytes+D8M_SEARCH_BYTES)*8*D8M_NUM_PHASES, so position = dptr-64+i*8
+                        // ends ~64 samples beyond data end). Walk BACKWARDS by signal_len.
+                        int sample_start = (position - D8M_LOOK_AHEAD) - signal_len;
+                        if (sample_start < 0) sample_start = 0;
+
+                        uint64_t scaled_signal_power = 0;
+                        for (int k = 0; k < signal_len && (sample_start + k) < (int)mag->length; ++k) {
+                            uint32_t mag_sample = m[sample_start + k];
+                            scaled_signal_power += (uint64_t)mag_sample * (uint64_t)mag_sample;
+                        }
+
+                        double signal_power = scaled_signal_power / 65535.0 / 65535.0;
+                        mm.signalLevel = signal_power / (signal_len > 0 ? signal_len : 1);
+                        Modes.stats_current.signal_power_sum += signal_power;
+                        Modes.stats_current.signal_power_count += signal_len;
+
+                        if (mm.signalLevel > Modes.stats_current.peak_signal_power)
+                            Modes.stats_current.peak_signal_power = mm.signalLevel;
+                        if (mm.signalLevel > 0.50119)
+                            Modes.stats_current.strong_signal_count++; // signal power above -3dBFS
+
+                        useModesMessage(&mm);
+                    }
                 }
 
                 // now backtrack by 56 bits, as we may have missed peaks in this region
